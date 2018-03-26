@@ -134,7 +134,10 @@ class Intelligence(basepoller.BasePollerFT):
                 LOG.error('%s - Unknown ip version: %d', self.name, n.version)
                 return [[None, None]]
 
-        else:
+        elif item['type'] == 'md5':
+            attributes['type'] = 'md5'
+
+         else:
             LOG.info(
                 '%s - indicator type %s not supported',
                 self.name,
