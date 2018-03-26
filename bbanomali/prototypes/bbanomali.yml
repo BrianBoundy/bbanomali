@@ -10,6 +10,7 @@ prototypes:
     node_type: miner
     indicator_types: [ domain, md5, URL, IPv4, IPv6 ]
     tags:
+            - extension    
             - ConfidenceHigh
             - ConfidenceLow
             - ConfidenceMedium
