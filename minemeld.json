@@ -1,15 +1,15 @@
 {
   "version": "0.1",
-  "name": "wildcardip-miner",
-  "author": "Palo Alto Networks",
-  "author_email": "techbizdev@paloaltonetworks.com",
-  "description": "Sample MineMeld node extension to generate CIDR variances from a wildcard",
+  "name": "bbanomali-miner",
+  "author": "Brian Boundy",
+  "author_email": "Brian.Boundy@Enbridge.com",
+  "description": "Added md5 to Anomali",
   "entry_points": {
     "minemeld_nodes": {
-      "wildcardipminer.Miner": "wildcardipminer.node:Miner"
+      "bbanomali.Miner": "bbanomali.node:Miner"
     },
     "minemeld_prototypes": {
-      "wildcardipminer.prototypes": "wildcardipminer:prototypes"
+      "bbanomali.prototypes": "bbanomali:prototypes"
     }
   },
   "manifest_version": 0

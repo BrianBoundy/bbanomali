@@ -1,11 +1,11 @@
-url: https://github.com/PaloAltoNetworks/wildcardipv4-miner
+url: https://github.com/BrianBoundy/bbanomali
 description: >
   Wildcard IPv4 generator
 
 prototypes:
   wildcardipv4:
     author: Palo Alto Networks TBD
-    class: wildcardipminer.Miner
+    class: bbanomali.Miner
     development_status: EXPERIMENTAL
     node_type: miner
     indicator_types:
