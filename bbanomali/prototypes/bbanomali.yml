@@ -5,7 +5,7 @@ description: >
 prototypes:
   bbAnomali:
     author: Brian Boundy
-    class: bbanomali.Miner
+    class: bbanomali.Intelligence
     development_status: EXPERIMENTAL
     node_type: miner
     indicator_types: [ domain, md5, URL, IPv4, IPv6 ]
@@ -17,7 +17,6 @@ prototypes:
         description: >
             Miner for Anomali Optic API. You need a valid Optic API Key
             to use this Miner.
-        class: minemeld.ft.anomali.Intelligence
         config:
             age_out:
                 default: 90d

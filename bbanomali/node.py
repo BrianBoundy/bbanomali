@@ -1,112 +1,242 @@
+import os
+import yaml
+import netaddr
+import pytz
+import datetime
+import requests
 import logging
+
 
 from minemeld.ft.basepoller import BasePollerFT
 
 LOG = logging.getLogger(__name__)
 
 
-class _wildcard_ipv4(object):
-    IPPART = 0
-    NETPART = 1
-
-    def _parse_ipnet(self, ip_netmask):
-        net_parts = ip_netmask.split('/')
-        if len(net_parts) != 2:
-            raise ValueError('Invalid IPv4/netmask string "{}"'.format(ip_netmask))
-        self._ip_part = [0L, 0L]
-        for idx in range(2):
-            parts = net_parts[idx].split('.')
-            if len(parts) != 4:
-                raise ValueError('Invalid IPv4/netmask string "{}"'.format(ip_netmask))
-            for val in parts:
-                int_value = int(val)
-                if not 0 <= int_value < 256:
-                    raise ValueError('Invalid IPv4/netmask string "{}"'.format(ip_netmask))
-                self._ip_part[idx] = (self._ip_part[idx] << 8) + int_value
-        # Let's get the tailing zeros in the mask
-        self._hostbits = 0
-        idx = 1L
-        while idx & self._ip_part[1] == 0 and self._hostbits < 32:
-            self._hostbits += 1
-            idx <<= 1;
-        if self._hostbits == 32:
-            raise ValueError('Invalid IPv4/netmask string "{}"'.format(ip_netmask))
-        # Time to create the list of zero slices in the mask
-        self._total_bits = 0
-        self._zero_slice = []
-        bit_pointer = self._hostbits
-        slice_start = 0
-        counting_ones = True
-        for bit_pointer in range(self._hostbits, 32):
-            if counting_ones and idx & self._ip_part[1] == 0:
-                counting_ones = False
-                slice_start = bit_pointer
-            if not counting_ones and idx & self._ip_part[1] != 0:
-                self._zero_slice.append((slice_start, bit_pointer - slice_start))
-                self._total_bits += bit_pointer - slice_start
-                counting_ones = True
-            idx <<= 1
-        if not counting_ones:
-            self._zero_slice.append((slice_start, 32 - slice_start))
-            self._total_bits += 32 - slice_start
-        self.size = 1 << self._total_bits
-
-    def _generate_cdir(self, ip_object, masklen):
-        return "{}.{}.{}.{}/{}".format(ip_object >> 24 & 0xffl,
-                                       ip_object >> 16 & 0xffl,
-                                       ip_object >> 8 & 0xffl,
-                                       ip_object & 0xffl,
-                                       masklen)
-
-    def _iterate(self, ip, pending_slices):
-        if len(pending_slices) > 1:
-            current_slice = pending_slices[-1]
-            for e in range(1 << current_slice[1]):
-                for b in self._iterate(ip | e << current_slice[0], pending_slices[:-1]):
-                    yield b
-        else:
-            for e2 in range(1 << pending_slices[0][1]):
-                yield self._generate_cdir(ip | e2 << pending_slices[0][0], 32 - self._hostbits)
-
-    def iterate(self):
-        if len(self._zero_slice) == 0:
-            return [self._generate_cdir(self._ip_part[0] & self._ip_part[1], 32 - self._hostbits)]
-        return self._iterate(self._ip_part[0] & self._ip_part[1], self._zero_slice)
-
-    def __init__(self, ip_netmask):
-        self._parse_ipnet(ip_netmask)
+_API_BASE = 'https://api.threatstream.com'
+_API_ENDPOINT = '/api/v2/intelligence/'
 
 
-class Miner(BasePollerFT):
+class Intelligence(basepoller.BasePollerFT):
+    def __init__(self, name, chassis, config):
+        super(Intelligence, self).__init__(name, chassis, config)
+
+        self.last_run = None
+
     def configure(self):
-        super(Miner, self).configure()
-        self.wildcard_list = self.config.get('wildcard_list', [])
-        self.max_entries = self.config.get('max_entries', 50000)
-        self.wildcard_object = []
-        self.size = 0
-        for entry in self.wildcard_list:
-            w_object = _wildcard_ipv4(entry)
-            self.size += w_object.size
-            self.wildcard_object.append(w_object)
+        super(Intelligence, self).configure()
 
-    def _build_iterator(self, item):
-        if self.size > self.max_entries:
-            raise ValueError(
-                'Wildcard list will generate {} entries. It is over the limit of {}.'.format(self.size,
-                                                                                             self.max_entries))
+        self.url = self.config.get('url', None)
+        self.polling_timeout = self.config.get('polling_timeout', 20)
+        self.verify_cert = self.config.get('verify_cert', True)
 
-        def main_loop():
-            for o in self.wildcard_object:
-                for e in o.iterate():
-                    yield e
+        self.prefix = self.config.get('prefix', 'anomali')
+        self.fields = self.config.get('fields', None)
+        self.query = self.config.get('query', None)
+        initial_interval = self.config.get('initial_interval', '3600')
+        self.initial_interval = interval_in_sec(initial_interval)
+        if self.initial_interval is None:
+            LOG.error(
+                '%s - wrong initial_interval format: %s',
+                self.name, initial_interval
+            )
+            self.initial_interval = 3600
 
-        return main_loop()
+        self.api_key = None
+        self.username = None
+        self.side_config_path = self.config.get('side_config', None)
+        if self.side_config_path is None:
+            self.side_config_path = os.path.join(
+                os.environ['MM_CONFIG_DIR'],
+                '%s_side_config.yml' % self.name
+            )
+
+        self._load_side_config()
+
+    def _load_side_config(self):
+        try:
+            with open(self.side_config_path, 'r') as f:
+                sconfig = yaml.safe_load(f)
+
+        except Exception as e:
+            LOG.error('%s - Error loading side config: %s', self.name, str(e))
+            return
+
+        self.api_key = sconfig.get('api_key', None)
+        if self.api_key is not None:
+            LOG.info('%s - API Key set', self.name)
+
+        self.username = sconfig.get('username', None)
+        if self.username is not None:
+            LOG.info('%s - username set', self.name)
+
+    def _calc_age_out(self, indicator, attributes):
+        etsattribute = self.prefix+'_expiration_ts'
+        if etsattribute in attributes:
+            original_ets = attributes[etsattribute]
+            LOG.debug('%s - original_ets: %s', self.name, original_ets)
+            original_ets = original_ets[:19]
+
+            ets = datetime.datetime.strptime(
+                original_ets,
+                '%Y-%m-%dT%H:%M:%S'
+            ).replace(tzinfo=pytz.UTC)
+            LOG.debug('%s - expiration_ts set for %s', self.name, indicator)
+            return dt_to_millisec(ets)
+
+        return super(Intelligence, self)._calc_age_out(indicator, attributes)
 
     def _process_item(self, item):
-        indicator = item
-        value = {
-            'type': 'IPv4',
-            'confidence': 100
-        }
+        if 'value' not in item:
+            LOG.debug('%s - value not in %s', self.name, item)
+            return [[None, None]]
 
-        return [[indicator, value]]
+        indicator = item['value']
+        if not (isinstance(indicator, str) or
+                isinstance(indicator, unicode)):
+            LOG.error(
+                '%s - Wrong indicator type: %s - %s',
+                self.name, indicator, type(indicator)
+            )
+            return [[None, None]]
+
+        fields = self.fields
+        if fields is None:
+            fields = item.keys()
+            fields.remove('value')
+
+        attributes = {}
+        for field in fields:
+            if field not in item:
+                continue
+            attributes['%s_%s' % (self.prefix, field)] = item[field]
+
+        if 'confidence' in item:
+            attributes['confidence'] = item['confidence']
+
+        if item['type'] == 'domain':
+            attributes['type'] = 'domain'
+
+        elif item['type'] == 'url':
+            attributes['type'] = 'URL'
+
+        elif item['type'] == 'ip':
+            try:
+                n = netaddr.IPNetwork(indicator)
+            except:
+                LOG.error('%s - Invald IP address: %s', self.name, indicator)
+                return [[None, None]]
+
+            if n.version == 4:
+                attributes['type'] = 'IPv4'
+            elif n.version == 6:
+                attributes['type'] = 'IPv6'
+            else:
+                LOG.error('%s - Unknown ip version: %d', self.name, n.version)
+                return [[None, None]]
+
+        else:
+            LOG.info(
+                '%s - indicator type %s not supported',
+                self.name,
+                item['type']
+            )
+            return [[None, None]]
+
+        return [[indicator, attributes]]
+
+    def _build_iterator(self, now):
+        if self.api_key is None or self.username is None:
+            raise RuntimeError('%s - credentials not set' % self.name)
+
+        if self.last_run is None:
+            now = datetime.datetime.fromtimestamp(now/1000.0, pytz.UTC)
+            dtinterval = datetime.timedelta(seconds=self.initial_interval)
+            origin = now - dtinterval
+        else:
+            origin = datetime.datetime.fromtimestamp(
+                self.last_run/1000.0,
+                pytz.UTC
+            )
+
+        q = '(modified_ts>=%s)' % origin.strftime('%Y-%m-%dT%H:%M:%S')
+        if self.query:
+            q = '(%s AND %s)' % (q, self.query)
+
+        params = dict(
+            username=self.username,
+            api_key=self.api_key,
+            limit=100,
+            q=q
+        )
+        LOG.debug('%s - query params: %s', self.name, params)
+
+        rkwargs = dict(
+            stream=True,
+            verify=self.verify_cert,
+            timeout=self.polling_timeout,
+            params=params
+        )
+
+        r = requests.get(
+            _API_BASE+_API_ENDPOINT,
+            **rkwargs
+        )
+
+        while True:
+            try:
+                r.raise_for_status()
+            except:
+                LOG.error(
+                    '%s - exception in request: %s %s',
+                    self.name, r.status_code, r.content
+                )
+                raise
+
+            cjson = r.json()
+            if 'objects' not in cjson:
+                LOG.error('%s - no objects in response', self.name)
+                return
+
+            objects = cjson['objects']
+            for o in objects:
+                yield o
+
+            if 'meta' not in cjson:
+                return
+
+            if 'next' not in cjson['meta']:
+                return
+
+            next_url = cjson['meta']['next']
+            if next_url is None:
+                return
+
+            LOG.debug('%s - requesting next items', self.name)
+            rkwargs.pop('params', None)
+            r = requests.get(
+                _API_BASE+cjson['meta']['next'],
+                **rkwargs
+            )
+
+    def hup(self, source=None):
+        LOG.info('%s - hup received, reload side config', self.name)
+        self._load_side_config()
+        super(Intelligence, self).hup(source)
+
+    @staticmethod
+    def gc(name, config=None):
+        basepoller.BasePollerFT.gc(name, config=config)
+
+        side_config_path = None
+        if config is not None:
+            side_config_path = config.get('side_config', None)
+        if side_config_path is None:
+            side_config_path = os.path.join(
+                os.environ['MM_CONFIG_DIR'],
+                '{}_side_config.yml'.format(name)
+            )
+
+        try:
+            os.remove(side_config_path)
+        except:
+            pass
