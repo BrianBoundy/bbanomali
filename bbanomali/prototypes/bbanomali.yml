@@ -1,34 +1,28 @@
 url: https://github.com/BrianBoundy/bbanomali
 description: >
-  Wildcard IPv4 generator
+  Upgrade anomali to use md5
 
 prototypes:
-  wildcardipv4:
-    author: Palo Alto Networks TBD
+  bbAnomali:
+    author: Brian Boundy
     class: bbanomali.Miner
     development_status: EXPERIMENTAL
     node_type: miner
-    indicator_types:
-      - IPv4
+    indicator_types: [ domain, md5, URL, IPv4, IPv6 ]
     tags:
-      - extension
-      - wildcardipv4
-    description: >
-      example prototype for wildcardipminer.Miner.
-    config:
-      # the list of wildcard strings
-      wildcard_list:
-        - 10.0.10.0/255.252.255.0
-        - 192.168.0.1/255.255.252.255
-      # you can define a build limit. The miner will fail in case the generation goes over this limit.
-      max_entries: 256
-      # regenerate the entries once a day
-      interval: 86400
-      # age out of indicators
-      age_out:
-        sudden_death: true
-        interval: 86400
-        default: null
-      # flag indicators with share level green
-      attributes:
-        share_level: green
+            - ConfidenceHigh
+            - ConfidenceLow
+            - ConfidenceMedium
+            - ShareLevelRed
+        description: >
+            Miner for Anomali Optic API. You need a valid Optic API Key
+            to use this Miner.
+        class: minemeld.ft.anomali.Intelligence
+        config:
+            age_out:
+                default: 90d
+                sudden_death: true
+                interval: 3307
+            attributes:
+                share_level: red
+                confidence: 30            
